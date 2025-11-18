@@ -13,7 +13,7 @@ vrs_file = "Eye_track_test.vrs"
 rgb_stream_id = StreamId("214-1")
 depth_m = 1.0        # Default eye gaze depth for 3D points to 1 meter
 output_mp4 = "Test_gaze.mp4"
-fps = 10.0           # rgb cam's normal fps
+fps = 10.0           # Have to change according to different profiles used
 
 print("Loading gaze csv...")
 gaze_cpf = mps.read_eyegaze(gaze_path)
@@ -41,12 +41,7 @@ while True:
 
     image_data = frame[0]   
     meta       = frame[1]   
-
-    if hasattr(meta, "capture_timestamp_ns"):
-        frame_ts_ns = meta.capture_timestamp_ns
-    elif hasattr(meta, "sensor_timestamp_ns"):
-        frame_ts_ns = meta.sensor_timestamp_ns
-
+    frame_ts_ns = meta.capture_timestamp_ns
     eye_gaze_info = get_nearest_eye_gaze(gaze_cpf, frame_ts_ns)
 
     x, y = None, None
@@ -60,7 +55,15 @@ while True:
         )
         x, y = gaze_projection 
 
-    img = image_data.to_numpy_array()    
+    # Debugging
+    # try:
+    #     img = image_data.to_numpy_array()    
+    # except RuntimeError as e:
+    #     print(f"[WARN] to_numpy_array failed at frame {idx}: {e}")
+    #     idx += 1
+    #     continue
+
+    img = image_data.to_numpy_array()
     img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
     if x is not None and y is not None:
@@ -76,3 +79,4 @@ while True:
 
 writer.release()
 print(f"Done. Saved gaze overlay video -> {output_mp4}")
+print(idx, "frames processed.", meta.frame_number if meta else None)
