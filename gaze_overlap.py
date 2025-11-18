@@ -1,50 +1,78 @@
-# overlay_with_mps_utils.py
-import cv2
+import projectaria_tools.core.mps as mps
 from projectaria_tools.core import data_provider
 from projectaria_tools.core.stream_id import StreamId
-from projectaria_tools.core.mps import read_eyegaze, utils as mps_utils
+from projectaria_tools.core.mps.utils import (
+    get_gaze_vector_reprojection,
+    get_nearest_eye_gaze,
+)
+import cv2
+import numpy as np
 
-VRS = r"Eye_track_test.vrs"
-MP4_IN = r"Eye_track_test.mp4"
-MP4_OUT = r"Eye_track_test_gaze.mp4"
-GAZE_CSV = r"mps_Eye_track_test_vrs\eye_gaze\general_eye_gaze.csv"
-RGB_STREAM = "214-1"
-DEFAULT_DEPTH_M = 1.0                # 没有深度时的回退
+gaze_path = "general_eye_gaze.csv"
+vrs_file = "Eye_track_test.vrs"
+rgb_stream_id = StreamId("214-1")
+depth_m = 1.0        # Default eye gaze depth for 3D points to 1 meter
+output_mp4 = "Test_gaze.mp4"
+fps = 10.0           # rgb cam's normal fps
 
-provider = data_provider.create_vrs_data_provider(VRS)
-rgb_id = StreamId(RGB_STREAM)
-rgb_label = provider.get_label_from_stream_id(rgb_id)
-device_calib = provider.get_device_calibration()
-rgb_calib = device_calib.get_camera_calib(rgb_label)
+print("Loading gaze csv...")
+gaze_cpf = mps.read_eyegaze(gaze_path)
 
-gaze = read_eyegaze(GAZE_CSV)
+print("Opening VRS...")
+vrs_dp = data_provider.create_vrs_data_provider(vrs_file)
+rgb_stream_label = vrs_dp.get_label_from_stream_id(rgb_stream_id)
+device_calib = vrs_dp.get_device_calibration()
+rgb_calib = device_calib.get_camera_calib(rgb_stream_label)
 
-cap = cv2.VideoCapture(MP4_IN)
-fps = cap.get(cv2.CAP_PROP_FPS)
-w  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-h  = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-writer = cv2.VideoWriter(MP4_OUT, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+frame0 = vrs_dp.get_image_data_by_index(rgb_stream_id, 0)
+img0 = frame0[0].to_numpy_array()        
+h, w = img0.shape[:2]
 
-frame_idx = 0
+fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+writer = cv2.VideoWriter(output_mp4, fourcc, fps, (w, h))
+print(f"Video size = {w}x{h}, fps = {fps}")
+
+idx = 0
 while True:
-    ok, frame = cap.read()
-    if not ok:
+    try:
+        frame = vrs_dp.get_image_data_by_index(rgb_stream_id, idx)
+    except RuntimeError:
         break
-    ts_ns = int(frame_idx / fps * 1e9)
-    info = mps_utils.get_nearest_eye_gaze(gaze, ts_ns)
-    if info:
-        depth_m = getattr(info, "depth_m", float("nan"))
-        if not (depth_m == depth_m):
-            depth_m = DEFAULT_DEPTH_M
-        uv = mps_utils.get_gaze_vector_reprojection(info, rgb_label, device_calib, rgb_calib, depth_m)
-        if uv is not None:
-            u, v = int(uv[0]), int(uv[1])
-            if 0 <= u < w and 0 <= v < h:
-                
-                cv2.circle(frame, (u, v), 6, (0, 255, 0), -1)
-                cv2.circle(frame, (u, v), 10, (0, 0, 0), 1)
-    writer.write(frame)
-    frame_idx += 1
 
-cap.release(); writer.release()
-print("Done:", MP4_OUT)
+    image_data = frame[0]   
+    meta       = frame[1]   
+
+    if hasattr(meta, "capture_timestamp_ns"):
+        frame_ts_ns = meta.capture_timestamp_ns
+    elif hasattr(meta, "sensor_timestamp_ns"):
+        frame_ts_ns = meta.sensor_timestamp_ns
+
+    eye_gaze_info = get_nearest_eye_gaze(gaze_cpf, frame_ts_ns)
+
+    x, y = None, None
+    if eye_gaze_info is not None:
+        gaze_projection = get_gaze_vector_reprojection(
+            eye_gaze_info,
+            rgb_stream_label,
+            device_calib,
+            rgb_calib,
+            depth_m,
+        )
+        x, y = gaze_projection 
+
+    img = image_data.to_numpy_array()    
+    img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+    if x is not None and y is not None:
+        xi, yi = int(round(x)), int(round(y))
+        if 0 <= xi < w and 0 <= yi < h:
+            cv2.circle(img_bgr, (xi, yi), 6, (0, 0, 255), -1)
+
+    writer.write(img_bgr)
+
+    idx += 1
+    if idx % 100 == 0:
+        print(f"Processed {idx} frames...")
+
+writer.release()
+print(f"Done. Saved gaze overlay video -> {output_mp4}")
